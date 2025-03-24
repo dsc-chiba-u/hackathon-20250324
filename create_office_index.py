@@ -3,7 +3,72 @@
 
 """
 Office文書（Word、Excel、PowerPoint）用のAzure AI Searchインデックスを作成するスクリプト
-Blobストレージに格納されたOffice文書からインデックスを作成します
+===================================================================
+
+このスクリプトは、Azure Blobストレージに格納されたOffice文書（Word、Excel、PowerPoint）から
+Azure AI Searchインデックスを作成するための包括的なツールです。
+
+## 主な機能
+
+1. **Office文書のインデクシング**: Word、Excel、PowerPointなどのOffice文書から
+   テキスト内容とメタデータを抽出してインデックス化します。
+
+2. **Cognitive Services統合**: オプションでAzure Cognitive Servicesのスキルセットを使用して
+   以下の機能を追加できます：
+   - 言語検出：ドキュメントの言語を自動的に識別
+   - キーフレーズ抽出：重要な用語やフレーズを抽出
+   - コンテンツの分割と結合：大きなドキュメントを適切に処理
+
+3. **セマンティック検索対応**: セマンティック検索と通常のキーワード検索の両方に
+   最適化されたインデックス構成を提供します。
+
+4. **カスタムスコアリングプロファイル**: 検索結果のランキングを調整するための
+   スコアリングプロファイルを設定します。
+
+## 使用方法
+
+基本的な使用方法:
+```bash
+python create_office_index.py --index-name "my-office-index" --container "my-documents"
+```
+
+Cognitive Servicesのスキルセットを使用する場合:
+```bash
+python create_office_index.py --index-name "my-office-index" --use-skillset
+```
+
+特定のフォルダ内の文書のみをインデックス化する:
+```bash
+python create_office_index.py --prefix "documents/office-files"
+```
+
+既存のリソースを削除する:
+```bash
+python create_office_index.py --index-name "my-office-index" --delete-only
+```
+
+## 必要な環境変数
+
+このスクリプトは以下の環境変数が設定されていることを前提としています：
+
+- `AZURE_SEARCH_ENDPOINT`: Azure AI Searchのエンドポイント
+- `AZURE_SEARCH_ADMIN_KEY`: 管理者キー
+- `AZURE_STORAGE_CONNECTION_STRING`: Blobストレージの接続文字列
+- `AZURE_COGNITIVE_SERVICES_KEY`: Cognitive Servicesのキー（--use-skillsetオプション使用時）
+- `AZURE_COGNITIVE_SERVICES_ENDPOINT`: Cognitive Servicesのエンドポイント（--use-skillsetオプション使用時）
+
+## 参考ドキュメント
+
+- [Azure AI Search公式ドキュメント](https://learn.microsoft.com/ja-jp/azure/search/)
+- [Azure Blob indexer configuration](https://learn.microsoft.com/ja-jp/azure/search/search-howto-indexing-azure-blob-storage)
+- [Cognitive Search (スキルセット)](https://learn.microsoft.com/ja-jp/azure/search/cognitive-search-concept-intro)
+- [セマンティック検索](https://learn.microsoft.com/ja-jp/azure/search/semantic-search-overview)
+- [カスタムスキルセットの作成](https://learn.microsoft.com/ja-jp/azure/search/cognitive-search-custom-skill-interface)
+- [ハイブリッド検索パターン設計](https://learn.microsoft.com/ja-jp/azure/search/hybrid-search-overview)
+
+このスクリプトはRAG（Retrieval Augmented Generation）アプリケーションの構築における
+基盤となるインデックスを作成するためのものです。RAGについては以下を参照してください：
+[Azure AI Searchを使用したRAGパターン](https://learn.microsoft.com/ja-jp/azure/search/retrieval-augmented-generation-overview)
 """
 
 import os
@@ -35,7 +100,22 @@ def get_search_headers():
     }
 
 def create_arg_parser():
-    """コマンドライン引数のパーサーを作成"""
+    """
+    コマンドライン引数のパーサーを作成
+    
+    このスクリプトで使用できるすべてのコマンドラインオプションを定義します。
+    オプションには以下のものがあります：
+    
+    - index-name: 作成するインデックスの名前
+    - container: BLOBコンテナの名前
+    - prefix: インデックス作成対象のドキュメントパスプレフィックス
+    - use-skillset: Cognitive Servicesのスキルセットを使用するかどうか
+    - delete-only: 既存のリソースを削除するのみ
+    - debug: デバッグモードの有効化
+    
+    Returns:
+        argparse.ArgumentParser: 設定済みの引数パーサー
+    """
     parser = argparse.ArgumentParser(description="Office文書からインデックスを作成")
     parser.add_argument("--index-name", default=DEFAULT_OFFICE_INDEX_NAME, help=f"作成するインデックス名（デフォルト: {DEFAULT_OFFICE_INDEX_NAME}）")
     parser.add_argument("--container", default=DEFAULT_CONTAINER_NAME, help=f"検索対象のコンテナ名（デフォルト: {DEFAULT_CONTAINER_NAME}）")
@@ -99,13 +179,30 @@ def delete_search_resources(endpoint, index_name):
         )
         if response.status_code == 204 or response.status_code == 404:
             logger.info(f"🗑️  データソース '{datasource_name}' を削除しました")
-    else:
+        else:
             logger.warning(f"⚠️  データソース '{datasource_name}' の削除に失敗: {response.text}")
     except Exception as e:
         logger.error(f"⚠️ データソース削除エラー: {str(e)}")
 
 def create_office_index(endpoint, index_name):
-    """Office文書用のインデックスを作成"""
+    """
+    Office文書用のインデックスを作成
+    
+    このインデックスは以下の主要なフィールドを含みます：
+    - id: ドキュメントの一意識別子（Blobストレージパスをbase64エンコード）
+    - content: ドキュメントの本文テキスト
+    - merged_content: スキル適用後の統合テキスト
+    - metadata_*: 各種メタデータフィールド（作成者、タイトル、最終更新日など）
+    - keyphrases: 抽出された重要キーフレーズ
+    - translated_text_*: 各言語に翻訳されたテキスト（オプション）
+    
+    Args:
+        endpoint (str): Azure AI Searchのエンドポイント
+        index_name (str): 作成するインデックスの名前
+        
+    Returns:
+        bool: インデックス作成の成功・失敗
+    """
     headers = get_search_headers()
     
     # Office文書用のインデックス定義
@@ -140,15 +237,15 @@ def create_office_index(endpoint, index_name):
     
     # インデックスを作成
     try:
-    response = requests.put(
+        response = requests.put(
             f"{endpoint}/indexes/{index_name}?api-version={API_VERSION}",
-        headers=headers,
-        json=index_definition
-    )
+            headers=headers,
+            json=index_definition
+        )
         if response.status_code == 201 or response.status_code == 200:
-        logger.info(f"✅ インデックス '{index_name}' を作成しました")
-        return True
-    else:
+            logger.info(f"✅ インデックス '{index_name}' を作成しました")
+            return True
+        else:
             logger.error(f"⚠️  インデックス '{index_name}' の作成に失敗: {response.text}")
             return False
     except Exception as e:
@@ -156,7 +253,35 @@ def create_office_index(endpoint, index_name):
         return False
 
 def create_skillset(endpoint, index_name, cognitive_services_key, cognitive_services_endpoint):
-    """Office文書処理用のスキルセットを作成"""
+    """
+    Office文書処理用のスキルセットを作成
+    
+    このスキルセットは以下の機能を含んでいます：
+    1. テキスト分割スキル：
+       - 大きなドキュメントを処理可能なサイズのチャンクに分割
+       - 1000文字ごとに分割し、100文字のオーバーラップを設定
+    
+    2. テキスト統合スキル：
+       - 分割されたページを意味のある形で再結合
+       - 元の文書の構造を維持しながら統合
+    
+    3. 言語検出スキル：
+       - ドキュメントの言語を自動検出
+       - 適切な言語処理を適用するために使用
+    
+    4. キーフレーズ抽出スキル：
+       - 文書から重要なキーワードやフレーズを抽出
+       - 検索時の関連性向上に活用
+    
+    Args:
+        endpoint (str): Azure AI Searchのエンドポイント
+        index_name (str): 関連付けるインデックスの名前
+        cognitive_services_key (str): Cognitive Servicesの認証キー
+        cognitive_services_endpoint (str): Cognitive Servicesのエンドポイント
+        
+    Returns:
+        bool: スキルセット作成の成功・失敗
+    """
     headers = get_search_headers()
     
     skillset_name = f"{index_name}-skillset"
@@ -273,15 +398,15 @@ def create_skillset(endpoint, index_name, cognitive_services_key, cognitive_serv
     
     # スキルセットを作成
     try:
-    response = requests.put(
+        response = requests.put(
             f"{endpoint}/skillsets/{skillset_name}?api-version={API_VERSION}",
-        headers=headers,
-        json=skillset_definition
-    )
+            headers=headers,
+            json=skillset_definition
+        )
         if response.status_code == 201 or response.status_code == 200:
-        logger.info(f"✅ スキルセット '{skillset_name}' を作成しました")
-        return True
-    else:
+            logger.info(f"✅ スキルセット '{skillset_name}' を作成しました")
+            return True
+        else:
             logger.error(f"⚠️  スキルセット '{skillset_name}' の作成に失敗: {response.text}")
             logger.error(response.text)
             return False
@@ -405,15 +530,15 @@ def create_indexer(endpoint, index_name, use_skillset=False):
     
     # インデクサーを作成
     try:
-    response = requests.put(
+        response = requests.put(
             f"{endpoint}/indexers/{indexer_name}?api-version={API_VERSION}",
-        headers=headers,
-        json=indexer_definition
-    )
+            headers=headers,
+            json=indexer_definition
+        )
         if response.status_code == 201 or response.status_code == 200:
-        logger.info(f"✅ インデクサー '{indexer_name}' を作成しました")
-        return True
-    else:
+            logger.info(f"✅ インデクサー '{indexer_name}' を作成しました")
+            return True
+        else:
             logger.error(f"⚠️  インデクサー '{indexer_name}' の作成に失敗: {response.text}")
             logger.error(response.text)
             return False
@@ -432,10 +557,10 @@ def run_indexer(endpoint, index_name):
             f"{endpoint}/indexers/{indexer_name}/run?api-version={API_VERSION}",
             headers=headers
         )
-    if response.status_code == 202:
-        logger.info(f"✅ インデクサー '{indexer_name}' を実行しました")
-        return True
-    else:
+        if response.status_code == 202:
+            logger.info(f"✅ インデクサー '{indexer_name}' を実行しました")
+            return True
+        else:
             logger.warning(f"⚠️  インデクサー '{indexer_name}' の実行に失敗: {response.text}")
             return False
     except Exception as e:
@@ -443,7 +568,34 @@ def run_indexer(endpoint, index_name):
         return False
 
 def update_semantic_configuration(endpoint, index_name):
-    """インデックスのセマンティック設定を詳細に調整"""
+    """
+    インデックスのセマンティック設定を詳細に調整
+    
+    セマンティック検索は、単なるキーワードマッチングではなく、
+    クエリとドキュメントの意味的な関連性を考慮した高度な検索機能です。
+    この関数では以下の設定を行います：
+    
+    1. タイトルフィールドの指定:
+       - metadata_titleをタイトルフィールドとして設定
+       - タイトルはセマンティック検索で特に重視される
+    
+    2. 優先コンテンツフィールドの指定:
+       - contentフィールド（原文）を最優先
+       - 日本語と英語の翻訳コンテンツも検索対象として設定
+    
+    3. キーワードフィールドの指定:
+       - キーフレーズをキーワードフィールドとして設定
+       - 重要な用語や概念に基づく検索精度向上
+    
+    Args:
+        endpoint (str): Azure AI Searchのエンドポイント
+        index_name (str): セマンティック設定を適用するインデックス名
+        
+    Returns:
+        bool: セマンティック設定適用の成功・失敗
+    
+    参考: https://learn.microsoft.com/ja-jp/azure/search/semantic-how-to-query-request
+    """
     headers = get_search_headers()
     
     # APIバージョンに合わせたセマンティック設定
@@ -514,7 +666,37 @@ def update_semantic_configuration(endpoint, index_name):
         return False
 
 def create_semantic_ranking_profile(endpoint, index_name):
-    """セマンティックランキングプロファイルを作成/更新"""
+    """
+    セマンティックランキングプロファイルを作成/更新
+    
+    検索結果のスコアリングを最適化するプロファイルを設定します。
+    ハイブリッドランキングとは、キーワード検索とセマンティック検索を
+    組み合わせた高度なランキング手法です。
+    
+    このプロファイルでは以下の設定を行います：
+    
+    1. フィールド重み付け：
+       - metadata_title: 5倍の重み（最重要）
+       - keyphrases: 3倍の重み（重要）
+       - content: 2倍の重み
+       - translated_text_ja: 2倍の重み
+       - translated_text_en: 1倍の重み（標準）
+    
+    2. スコアリング関数：
+       - keyphrases（キーフレーズ）フィールドの数に基づく
+         マグニチュード関数を適用（boost: 2）
+       - より多くのキーフレーズに一致するドキュメントを
+         より上位に表示
+    
+    Args:
+        endpoint (str): Azure AI Searchのエンドポイント
+        index_name (str): ランキングプロファイルを適用するインデックス名
+        
+    Returns:
+        bool: ランキングプロファイル作成/更新の成功・失敗
+    
+    参考: https://learn.microsoft.com/ja-jp/azure/search/index-add-scoring-profiles
+    """
     headers = get_search_headers()
     
     # インデックス情報を取得
@@ -583,7 +765,45 @@ def create_semantic_ranking_profile(endpoint, index_name):
         return False
 
 def main():
-    """メイン関数"""
+    """
+    メイン関数 - Office文書インデックス作成の実行フロー
+    
+    以下の手順でインデックスを作成します：
+    1. 環境変数のチェック
+    2. 既存リソースの削除（クリーンスタート）
+    3. インデックス定義の作成
+    4. スキルセットの作成（オプション）
+    5. データソースの作成
+    6. インデクサーの作成と実行
+    7. セマンティック設定の適用
+    8. スコアリングプロファイルの設定
+    
+    【使用例】
+    
+    基本的な使用方法:
+    ```
+    python create_office_index.py --index-name "my-office-docs"
+    ```
+    
+    Cognitive Servicesスキルセットを使用:
+    ```
+    python create_office_index.py --use-skillset
+    ```
+    
+    特定のBlobコンテナ/プレフィックスを指定:
+    ```
+    python create_office_index.py --container "documents" --prefix "office/2023"
+    ```
+    
+    既存のリソースを削除するだけ:
+    ```
+    python create_office_index.py --delete-only
+    ```
+    
+    詳細は以下のチュートリアルを参照:
+    - https://learn.microsoft.com/ja-jp/azure/search/search-howto-indexing-azure-blob-storage
+    - https://learn.microsoft.com/ja-jp/azure/search/cognitive-search-tutorial-blob
+    """
     # コマンドライン引数を解析
     parser = create_arg_parser()
     args = parser.parse_args()
