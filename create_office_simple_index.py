@@ -29,8 +29,17 @@ python create_office_simple_index.py --index-name "my-simple-index" --container 
 - Azure AI Search概要: https://learn.microsoft.com/ja-jp/azure/search/search-what-is-azure-search
 - Blobインデクサー: https://learn.microsoft.com/ja-jp/azure/search/search-howto-indexing-azure-blob-storage
 - スキルセット: https://learn.microsoft.com/ja-jp/azure/search/cognitive-search-working-with-skillsets
+
+スキルセット関連のドキュメント:
+- スキルセット概要: https://learn.microsoft.com/ja-jp/azure/search/cognitive-search-concept-intro
 - 言語検出スキル: https://learn.microsoft.com/ja-jp/azure/search/cognitive-search-skill-language-detection
-- コマンドラインスクリプト: https://learn.microsoft.com/ja-jp/azure/search/search-import-data-python
+- OCRスキル: https://learn.microsoft.com/ja-jp/azure/search/cognitive-search-skill-ocr
+- エンティティ認識スキル: https://learn.microsoft.com/ja-jp/azure/search/cognitive-search-skill-entity-recognition
+- キーフレーズ抽出スキル: https://learn.microsoft.com/ja-jp/azure/search/cognitive-search-skill-keyphrases
+- カスタムスキルの作成: https://learn.microsoft.com/ja-jp/azure/search/cognitive-search-create-custom-skill-example
+- スキルセットのデバッグ: https://learn.microsoft.com/ja-jp/azure/search/cognitive-search-debug-session
+
+コマンドラインスクリプト: https://learn.microsoft.com/ja-jp/azure/search/search-import-data-python
 
 テクニカルリファレンス:
 - REST API: https://learn.microsoft.com/ja-jp/rest/api/searchservice/
@@ -228,6 +237,17 @@ def create_skillset(endpoint, index_name, cognitive_services_key):
     2. Azure Cognitive Servicesの言語検出モデルで分析
     3. 検出された言語コードをlanguageフィールドに出力
     
+    言語検出スキルでは、120以上の言語とその変種を検出できます。主要な言語コード:
+    - 日本語: ja
+    - 英語: en
+    - 中国語（簡体字）: zh-Hans
+    - 中国語（繁体字）: zh-Hant
+    - フランス語: fr
+    - ドイツ語: de
+    - スペイン語: es
+    - イタリア語: it
+    - 韓国語: ko
+    
     Args:
         endpoint (str): Azure AI Searchのエンドポイント
         index_name (str): 関連付けるインデックスの名前
@@ -237,8 +257,11 @@ def create_skillset(endpoint, index_name, cognitive_services_key):
         bool: スキルセット作成の成功・失敗
         
     参考:
-    - https://learn.microsoft.com/ja-jp/azure/search/cognitive-search-skill-language-detection
-    - https://learn.microsoft.com/ja-jp/azure/search/cognitive-search-defining-skillset
+    - 言語検出スキル: https://learn.microsoft.com/ja-jp/azure/search/cognitive-search-skill-language-detection
+    - スキルセットの定義: https://learn.microsoft.com/ja-jp/azure/search/cognitive-search-defining-skillset
+    - 対応言語コード一覧: https://learn.microsoft.com/ja-jp/azure/ai-services/translator/language-support
+    - スキルの入出力マッピング: https://learn.microsoft.com/ja-jp/azure/search/cognitive-search-concept-annotations-syntax
+    - スキルセットの例: https://learn.microsoft.com/ja-jp/azure/search/cognitive-search-working-with-skillsets#example-skillset
     """
     headers = get_headers()
     
@@ -484,6 +507,13 @@ def main():
     7. インデクサーの作成
     8. インデクサーの実行開始
     
+    スキルセットとCognitive Services:
+    スキルセットを使用する場合（--use-skillset）は、Azure Cognitive Servicesのキーが
+    必要になります。これは言語検出などのAI機能を使用するために必要です。
+    スキルセットはインデクサーの実行プロセス中に適用され、抽出されたデータを
+    強化します。例えば、言語検出スキルセットは文書の言語を自動的に特定し、
+    languageフィールドに格納します。
+    
     使用例:
     ```
     # 基本的な使用方法
@@ -500,8 +530,10 @@ def main():
         int: 処理結果のステータスコード (0:成功, 1:失敗)
     
     参考:
-    - https://learn.microsoft.com/ja-jp/azure/search/search-get-started-rest
-    - https://learn.microsoft.com/ja-jp/azure/search/search-howto-index-one-to-one-blobs
+    - REST APIの使用: https://learn.microsoft.com/ja-jp/azure/search/search-get-started-rest
+    - Blobインデックス作成: https://learn.microsoft.com/ja-jp/azure/search/search-howto-index-one-to-one-blobs
+    - スキルセットとインデクサーの連携: https://learn.microsoft.com/ja-jp/azure/search/cognitive-search-tutorial-blob
+    - インデクサーのスケジュール設定: https://learn.microsoft.com/ja-jp/azure/search/search-howto-schedule-indexers
     """
     # コマンドライン引数の解析
     args = parse_arguments()
