@@ -101,6 +101,7 @@ def parse_arguments():
     --prefix: Blobプレフィックスのフィルタリング
     --delete-only: 削除処理のみを実行
     --use-skillset: 言語検出スキルセットを使用するかどうか
+    --env-file: 環境変数ファイルのパス
     
     Returns:
         argparse.Namespace: パースされたコマンドライン引数のオブジェクト
@@ -118,6 +119,8 @@ def parse_arguments():
                         help="既存のリソースを削除するのみ")
     parser.add_argument("--use-skillset", action="store_true",
                         help="言語検出のスキルセットを使用する")
+    parser.add_argument("--env-file", 
+                        help="環境変数ファイルのパス（.env形式）")
     return parser.parse_args()
 
 def delete_resources(endpoint, index_name):
@@ -197,7 +200,8 @@ def create_index(endpoint, index_name):
         "name": index_name,
         "fields": [
             {"name": "id", "type": "Edm.String", "key": True, "searchable": False},
-            {"name": "content", "type": "Edm.String", "searchable": True, "filterable": False, "sortable": False},
+            {"name": "content", "type": "Edm.String", "searchable": True, "filterable": False, "sortable": False, "facetable": False},
+            {"name": "merged_content", "type": "Edm.String", "searchable": True, "filterable": False, "sortable": False, "facetable": False},
             {"name": "metadata_storage_name", "type": "Edm.String", "searchable": True, "filterable": True, "sortable": True},
             {"name": "metadata_storage_path", "type": "Edm.String", "searchable": False, "filterable": True, "sortable": False},
             {"name": "metadata_content_type", "type": "Edm.String", "searchable": True, "filterable": True, "sortable": True},
@@ -233,9 +237,9 @@ def create_skillset(endpoint, index_name, cognitive_services_key):
     検出した言語コード（ISO 639-1形式、例: "ja", "en"など）を出力します。
     
     スキルセットの動作:
-    1. 文書のコンテンツを入力として受け取る
-    2. Azure Cognitive Servicesの言語検出モデルで分析
-    3. 検出された言語コードをlanguageフィールドに出力
+    1. テキスト分割スキル - 大きなドキュメントを処理可能なサイズのチャンクに分割
+    2. テキスト結合スキル - 分割されたチャンクを再結合
+    3. 言語検出スキル - 文書の言語を自動検出
     
     言語検出スキルでは、120以上の言語とその変種を検出できます。主要な言語コード:
     - 日本語: ja
@@ -267,16 +271,60 @@ def create_skillset(endpoint, index_name, cognitive_services_key):
     
     skillset_name = f"{index_name}-skillset"
 
-    # 言語検出のみのシンプルなスキルセット
+    # 言語検出と文書分割のスキルセット
     skillset_definition = {
         "name": skillset_name,
-        "description": "言語検出のみの簡易スキルセット",
+        "description": "文書分割と言語検出のスキルセット",
         "cognitiveServices": {
             "@odata.type": "#Microsoft.Azure.Search.CognitiveServicesByKey",
             "description": "Cognitive Services",
             "key": cognitive_services_key
         },
         "skills": [
+            # テキスト分割スキル - 大きなドキュメントを処理可能なサイズのチャンクに分割
+            {
+                "@odata.type": "#Microsoft.Skills.Text.SplitSkill",
+                "context": "/document",
+                "textSplitMode": "pages",
+                "maximumPageLength": 1000,        # チャンクサイズを小さくして処理を最適化
+                "pageOverlapLength": 100,         # オーバーラップも適切に調整
+                "defaultLanguageCode": "ja",      # デフォルト言語を設定
+                "inputs": [
+                    {
+                        "name": "text",
+                        "source": "/document/content"
+                    }
+                ],
+                "outputs": [
+                    {
+                        "name": "textItems",
+                        "targetName": "pages"
+                    }
+                ]
+            },
+            # テキストの統合 - 分割されたページを再結合
+            {
+                "@odata.type": "#Microsoft.Skills.Text.MergeSkill",
+                "context": "/document",
+                "insertPreTag": " ",
+                "insertPostTag": " ",
+                "inputs": [
+                    {
+                        "name": "text",
+                        "source": "/document/content"
+                    },
+                    {
+                        "name": "itemsToInsert",
+                        "source": "/document/pages/*"
+                    }
+                ],
+                "outputs": [
+                    {
+                        "name": "mergedText",
+                        "targetName": "merged_content"
+                    }
+                ]
+            },
             # 言語検出スキル
             {
                 "@odata.type": "#Microsoft.Skills.Text.LanguageDetectionSkill",
@@ -284,7 +332,7 @@ def create_skillset(endpoint, index_name, cognitive_services_key):
                 "inputs": [
                     {
                         "name": "text",
-                        "source": "/document/content"
+                        "source": "/document/merged_content"
                     }
                 ],
                 "outputs": [
@@ -435,6 +483,10 @@ def create_indexer(endpoint, index_name, use_skillset):
         indexer_definition["skillsetName"] = skillset_name
         indexer_definition["outputFieldMappings"] = [
             {
+                "sourceFieldName": "/document/merged_content",
+                "targetFieldName": "merged_content"
+            },
+            {
                 "sourceFieldName": "/document/language",
                 "targetFieldName": "language"
             }
@@ -499,13 +551,14 @@ def main():
     
     このスクリプトの主な実行フローを制御します。以下のステップで処理を行います:
     1. コマンドライン引数の解析
-    2. 必要な環境変数の確認
-    3. 既存リソースの削除
-    4. インデックスの作成
-    5. スキルセットの作成（オプション）
-    6. データソースの作成
-    7. インデクサーの作成
-    8. インデクサーの実行開始
+    2. 環境変数ファイルの読み込み（指定があれば）
+    3. 必要な環境変数の確認
+    4. 既存リソースの削除
+    5. インデックスの作成
+    6. スキルセットの作成（オプション）
+    7. データソースの作成
+    8. インデクサーの作成
+    9. インデクサーの実行開始
     
     スキルセットとCognitive Services:
     スキルセットを使用する場合（--use-skillset）は、Azure Cognitive Servicesのキーが
@@ -524,6 +577,9 @@ def main():
     
     # 特定のフォルダ内のファイルのみインデックス化
     python create_office_simple_index.py --prefix "reports/2023"
+    
+    # 環境変数ファイルを指定
+    python create_office_simple_index.py --env-file .env.local
     ```
     
     Returns:
@@ -538,6 +594,15 @@ def main():
     # コマンドライン引数の解析
     args = parse_arguments()
     
+    # 環境変数ファイルの読み込み（指定があれば）
+    if args.env_file:
+        if os.path.exists(args.env_file):
+            logger.info(f"環境変数ファイル '{args.env_file}' を読み込みます")
+            load_dotenv(args.env_file, override=True)
+        else:
+            logger.error(f"⚠️ 環境変数ファイル '{args.env_file}' が見つかりません")
+            return 1
+    
     # 環境変数の取得
     search_endpoint = os.environ.get("AZURE_SEARCH_ENDPOINT")
     if not search_endpoint:
@@ -550,8 +615,16 @@ def main():
         return 1
     
     cognitive_services_key = os.environ.get("AZURE_COGNITIVE_SERVICES_KEY")
+    # Cognitive Servicesのキーが見つからない場合、AZURE_COGNITIVE_ALLINONE_KEYを試す
+    if not cognitive_services_key:
+        cognitive_services_key = os.environ.get("AZURE_COGNITIVE_ALLINONE_KEY")
+        if cognitive_services_key and cognitive_services_key.startswith('"') and cognitive_services_key.endswith('"'):
+            # 引用符で囲まれている場合は削除
+            cognitive_services_key = cognitive_services_key[1:-1]
+        logger.info("AZURE_COGNITIVE_ALLINONE_KEYを使用します")
+        
     if args.use_skillset and not cognitive_services_key:
-        logger.error("⚠️ スキルセット使用時は環境変数 'AZURE_COGNITIVE_SERVICES_KEY' が必要です")
+        logger.error("⚠️ スキルセット使用時は環境変数 'AZURE_COGNITIVE_SERVICES_KEY' または 'AZURE_COGNITIVE_ALLINONE_KEY' が必要です")
         return 1
     
     # 既存リソースの削除
